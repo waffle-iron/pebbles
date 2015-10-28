@@ -17,11 +17,22 @@
 ## Under the hood
 
 - Angular/restangular/bootstrap for WEB UI
-- flask/restful/sqlalchemy for REST API
+- flask/restful/sqlite/sqlalchemy for REST API
+- backend = www + worker (+proxy)
+- celery + redis for communication between components
 - Driver plugins for different kinds of provisioned resources
 - blueprint = driver + configuration
 
 # PoutaBlueprints now
+
+## Deployment
+- using ansible to install and configure software
+- devel installation: vagrant + ansible
+    - can run in docker or virtualbox 
+- server installation: docker + ansible
+    - separate containers for www, worker, proxy
+    - containers created by ansible
+    - single server hosts all containers
 
 ## OpenStackDriver
 
