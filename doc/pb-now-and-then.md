@@ -5,14 +5,16 @@
 
 # Overview
 
+## Surface
+
 - Web interface to resources provisioned in the cloud
 - System admins make blueprints, e.g. configurations
 - Users launch instances of blueprints
-- Instances are time limited
+- Instances are time limited, quota limited
 - Users are authenticated
 - Accounts 
-    - can be added by admin
-    - can come from HAKA 
+    - can be added by admin (via activation email)
+    - can come from HAKA
 
 ## Under the hood
 
