@@ -2,7 +2,26 @@
 % Olli Tourunen @ DAC Team Afternoon
 % 2015-10-28
 
-# PB provisioning now
+
+# Overview
+
+- Web interface to resources provisioned in the cloud
+- System admins make blueprints, e.g. configurations
+- Users launch instances of blueprints
+- Instances are time limited
+- Users are authenticated
+- Accounts 
+    - can be added by admin
+    - can come from HAKA 
+
+## Under the hood
+
+- Angular/restangular/bootstrap for WEB UI
+- flask/restful/sqlalchemy for REST API
+- Driver plugins for different kinds of provisioned resources
+- blueprint = driver + configuration
+
+# PoutaBlueprints now
 
 ## OpenStackDriver
 
@@ -31,11 +50,11 @@
 - good for hosting disposable notebooks
 - RStudio and Jupyter images working
 
-# PB provisioning then
+# PoutaBlueprints then
 
 ## OpenStackDriver
 
-- No big hurts
+- No big hurts, no big plans
 
 ## PvcCmdLineDriver
 

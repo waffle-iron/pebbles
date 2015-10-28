@@ -18,8 +18,8 @@ web_server_type: "nginx"
 git_repository: "https://github.com/CSC-IT-Center-for-Science/pouta-blueprints.git"
 git_version: "master"
 
-apt_repository_url: "http://www.nic.funet.fi/pub/mirrors/archive.ubuntu.com/"
-#apt_repository_url: "http://fi.mirrors.archive.ubuntu.com/ubuntu/"
+#apt_repository_url: "http://www.nic.funet.fi/pub/mirrors/archive.ubuntu.com/"
+apt_repository_url: "http://fi.mirrors.archive.ubuntu.com/ubuntu/"
 #apt_repository_url: "mirror://mirrors.ubuntu.com/mirrors.txt"
 
 virtualenv_path: "/webapps/{{ application_name }}/venv"
