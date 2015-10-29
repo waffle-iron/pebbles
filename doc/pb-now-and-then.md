@@ -132,3 +132,4 @@
 
 - also see github issues page at https://github.com/CSC-IT-Center-for-Science/pouta-blueprints/issues
 
+## Guides, how-tos and marketing material
