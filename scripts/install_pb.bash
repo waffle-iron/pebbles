@@ -234,6 +234,17 @@ EOF_SSH
 
     fi
 
+    if ! grep -q "Host redis" ~/.ssh/config; then
+        echo "adding entry for proxy"
+        cat >> ~/.ssh/config << EOF_SSH
+Host redis
+        StrictHostKeyChecking no
+        HostName localhost
+        Port 2221
+EOF_SSH
+
+    fi
+
     echo "making ssh config accessible for user only"
     chmod go-rwx ~/.ssh/config
 

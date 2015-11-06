@@ -56,6 +56,29 @@
     - "{{ docker_host_cert_dir }}"
   when: ansible_lsb.id=="CentOS"
 
+- name: Bring up container for redis
+  docker:
+    hostname: redis
+    image: "{{ image_name }}"
+    state: running
+    restart_policy: always
+    name: redis
+    expose:
+      - 6379
+    ports:
+      - "2221:22"
+    volumes:
+      - "{{ docker_host_app_root }}:/shared_folder/source:ro"
+
+- name: add redis to inventory
+  add_host:
+    name: redis
+    groups: docker,redis
+    ansible_ssh_host: localhost
+    ansible_ssh_port: 2221
+    ansible_ssh_user: ansible
+
+
 - name: Bring up container for www
   docker:
     hostname: www
@@ -68,12 +91,13 @@
       - 80
       - 443
       - 1443
-      - 6379
     ports:
       - "2222:22"
       - "{{ docker_http_port }}:80"
       - "{{ docker_https_port }}:443"
       - "{{ docker_https_port_worker}}:1443"
+    links:
+      - "redis:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_cert_dir }}:/etc/apache2/ssl:ro"
@@ -104,6 +128,7 @@
       - "{{ public_https_proxy_port }}:{{ internal_https_proxy_port }}"
     links:
       - "www:www"
+      - "redis:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_cert_dir }}:/etc/nginx/ssl:ro"
@@ -131,6 +156,7 @@
     links:
       - "www:www"
       - "proxy:proxy"
+      - "redis:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_m2m_credentials_dir }}:{{ application_m2m_credentials_dir }}:ro"

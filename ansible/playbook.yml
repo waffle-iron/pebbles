@@ -14,25 +14,31 @@
     - image_name: ubuntu_with_ssh
 
 - hosts:
+    - redis
     - www
     - worker
     - proxy
   sudo: True
   roles:
-      - cloud_user_with_sudo
-      - common
+    - cloud_user_with_sudo
+    - common
+
+- hosts: redis
+  sudo: True
+  roles:
+    - redis
 
 - hosts: www
   sudo: True
   roles:
-      - www
+    - www
 
 - hosts: worker
   sudo: True
   roles:
-      - worker
+    - worker
 
 - hosts: proxy
   sudo: True
   roles:
-      - proxy
+    - proxy

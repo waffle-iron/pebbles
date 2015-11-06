@@ -32,9 +32,10 @@ Vagrant.configure(2) do |config|
   config.vm.provision "ansible" do |ansible|
     ansible.playbook = "ansible/playbook.yml"
     ansible.groups = {
-      "www" => ["www","single"],
-      "worker" => ["worker","single"],
-      "all_groups:children" => ["www", "worker"]
+      "redis" => ["redis", "single"],
+      "www" => ["www", "single"],
+      "worker" => ["worker", "single"],
+      "all_groups:children" => ["redis", "www", "worker"]
     }
     ansible.verbose='vv'
   end
