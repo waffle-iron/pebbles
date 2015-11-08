@@ -5,6 +5,12 @@
 #   standalone: checkout from github
 deploy_mode: "devel"
 
+# which components to deploy on this host
+deploy_www: True
+deploy_worker: True
+deploy_proxy: True
+deploy_redis: True
+
 # application server type:
 #   devel: Flask built-in HTTP server
 #   prod: Gunicorn HTTP server
@@ -91,3 +97,6 @@ docker_http_port_worker: 1080
 docker_https_port_worker: 1443
 public_https_proxy_port: 8443
 internal_https_proxy_port: 8443
+docker_api_host: www
+docker_redis_host: redis
+proxy_public_ipv4: "127.0.0.1"

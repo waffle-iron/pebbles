@@ -251,8 +251,8 @@ class DockerDriver(base_driver.ProvisioningDriverBase):
                 {
                     'name': 'https',
                     'access': 'https://%s:%s/%s' % (
-                        self.config['PUBLIC_IPV4'],
-                        self.config['PUBLIC_HTTPS_PROXY_PORT'],
+                        self.config['PROXY_PUBLIC_IPV4'],
+                        self.config['PROXY_PUBLIC_HTTPS_PORT'],
                         proxy_route
                     )
                 },

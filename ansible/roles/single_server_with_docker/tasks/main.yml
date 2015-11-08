@@ -69,6 +69,7 @@
       - "2221:22"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
+  when: "{{ deploy_redis | bool }}"
 
 - name: add redis to inventory
   add_host:
@@ -77,6 +78,39 @@
     ansible_ssh_host: localhost
     ansible_ssh_port: 2221
     ansible_ssh_user: ansible
+  when: "{{ deploy_redis | bool }}"
+
+- name: Bring up ambassador container for redis (on redis host)
+  docker:
+    hostname: redis_ambassador
+    image: svendowideit/ambassador
+    state: running
+    restart_policy: always
+    name: redis_ambassador
+    expose:
+      - 6379
+    ports:
+      - "6379:6379"
+    links:
+      - "redis:redis"
+    env:
+      WWW_PORT_6379_TCP: tcp://redis:6379
+  when: "{{ deploy_redis | bool }}"
+
+- name: Bring up ambassador container for redis (remote host)
+  docker:
+    hostname: redis_ambassador
+    image: svendowideit/ambassador
+    state: running
+    restart_policy: always
+    name: redis_ambassador
+    expose:
+      - 6379
+    ports:
+      - "6379:6379"
+    env:
+      WWW_PORT_6379_TCP: tcp://{{ docker_api_host }}:6379
+  when: "not {{ deploy_redis | bool}}"
 
 
 - name: Bring up container for www
@@ -95,12 +129,12 @@
       - "2222:22"
       - "{{ docker_http_port }}:80"
       - "{{ docker_https_port }}:443"
-      - "{{ docker_https_port_worker}}:1443"
     links:
-      - "redis:redis"
+      - "redis_ambassador:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_cert_dir }}:/etc/apache2/ssl:ro"
+  when: "{{ deploy_www | bool }}"
 
 - name: add www to inventory
   add_host:
@@ -109,9 +143,39 @@
     ansible_ssh_host: localhost
     ansible_ssh_port: 2222
     ansible_ssh_user: ansible
-  ## see https://github.com/ansible/ansible-modules-core/issues/1005
-  # when: item.Config.Hostname == "www" and item.State.Running == True
-  # with_items: docker_containers
+  when: "{{ deploy_www | bool }}"
+
+- name: Bring up ambassador container for www (on www host)
+  docker:
+    hostname: www_ambassador
+    image: svendowideit/ambassador
+    state: running
+    restart_policy: always
+    name: www_ambassador
+    expose:
+      - 1443
+    ports:
+      - "{{ docker_https_port_worker}}:1443"
+    links:
+      - "www:www"
+    env:
+      WWW_PORT_1443_TCP: tcp://www:1443
+  when: "{{ deploy_www | bool }}"
+
+- name: Bring up ambassador container for www (on remote host)
+  docker:
+    hostname: www_ambassador
+    image: svendowideit/ambassador
+    state: running
+    restart_policy: always
+    name: www_ambassador
+    expose:
+      - 1443
+    ports:
+      - "{{ docker_https_port_worker}}:1443"
+    env:
+      WWW_PORT_1443_TCP: tcp://{{ docker_api_host }}:1443
+  when: "not {{ deploy_www | bool }}"
 
 - name: Bring up container for proxy
   docker:
@@ -127,11 +191,12 @@
       - "2224:22"
       - "{{ public_https_proxy_port }}:{{ internal_https_proxy_port }}"
     links:
-      - "www:www"
-      - "redis:redis"
+      - "www_ambassador:www"
+      - "redis_ambassador:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_cert_dir }}:/etc/nginx/ssl:ro"
+  when: "{{ deploy_proxy | bool }}"
 
 - name: add proxy to inventory
   add_host:
@@ -140,7 +205,7 @@
     ansible_ssh_host: localhost
     ansible_ssh_port: 2224
     ansible_ssh_user: ansible
-
+  when: "{{ deploy_proxy | bool }}"
 
 - name: Bring up container for worker
   docker:
@@ -154,13 +219,13 @@
     ports:
       - "2223:22"
     links:
-      - "www:www"
-      - "proxy:proxy"
-      - "redis:redis"
+      - "www_ambassador:www"
+      - "redis_ambassador:redis"
     volumes:
       - "{{ docker_host_app_root }}:/shared_folder/source:ro"
       - "{{ docker_host_m2m_credentials_dir }}:{{ application_m2m_credentials_dir }}:ro"
       - "{{ docker_host_image_dir }}:/images:ro"
+  when: "{{ deploy_worker | bool }}"
 
 - name: add worker to inventory
   add_host:
@@ -169,9 +234,7 @@
     ansible_ssh_host: localhost
     ansible_ssh_port: 2223
     ansible_ssh_user: ansible
-  ## see https://github.com/ansible/ansible-modules-core/issues/1005
-  # when: item.config.hostname == "worker" and item.state.running == True
-  # with_items: docker_containers
+  when: "{{ deploy_worker | bool }}"
 
 - name: "Wait a bit for sshd to come up"
   pause: seconds=5
