@@ -186,10 +186,10 @@
     name: proxy
     expose:
       - 22
-      - "{{ internal_https_proxy_port }}"
+      - "{{ proxy_internal_https_port }}"
     ports:
       - "2224:22"
-      - "{{ public_https_proxy_port }}:{{ internal_https_proxy_port }}"
+      - "{{ proxy_public_https_port }}:{{ proxy_internal_https_port }}"
     links:
       - "www_ambassador:www"
       - "redis_ambassador:redis"

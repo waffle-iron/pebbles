@@ -140,6 +140,7 @@ class PBClientMock(object):
                     internal_port=8888,
                     consumed_slots=1,
                     memory_limit='512m',
+                    environment_vars='FOO=BAR',
                 ),
             )
         }
@@ -232,8 +233,9 @@ class DockerDriverTestCase(BaseTestCase):
             INTERNAL_API_BASE_URL='http://bogus/api/v1',
             TEST_MODE=True,
             PUBLIC_IPV4='10.0.0.1',
-            PUBLIC_HTTPS_PROXY_PORT=8443,
-            INTERNAL_HTTPS_PROXY_PORT=8443,
+            PROXY_PUBLIC_HTTPS_PORT=8443,
+            PROXY_INTERNAL_HTTPS_PORT=8443,
+            PROXY_PUBLIC_IPV4='10.0.0.2',
             DD_HOST_IMAGE='CentOS-7.0',
             DD_MAX_HOSTS=4,
             DD_SHUTDOWN_MODE=False,

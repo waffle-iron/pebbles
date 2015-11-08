@@ -95,8 +95,8 @@ docker_http_port: 80
 docker_https_port: 443
 docker_http_port_worker: 1080
 docker_https_port_worker: 1443
-public_https_proxy_port: 8443
-internal_https_proxy_port: 8443
+proxy_public_https_port: 8443
+proxy_internal_https_port: 8443
+proxy_public_ipv4: "127.0.0.1"
 docker_api_host: www
 docker_redis_host: redis
-proxy_public_ipv4: "127.0.0.1"
