@@ -176,7 +176,7 @@ run_ansible()
     export ANSIBLE_HOST_KEY_CHECKING=0
     export PYTHONUNBUFFERED=1
     extra_args="$extra_env"
-    if [ $use_shibboleth ]; then
+    if [ $use_shibboleth == true ]; then
         extra_args="-e enable_shibboleth=True $extra_args"
     fi
 
@@ -282,7 +282,7 @@ print_usage()
 # Main starts here. First parse options
 
 deploy_roles="www,worker,redis,proxy"
-use_shibboleth=0
+use_shibboleth=false
 extra_env=""
 
 while getopts "h?csr:e:" opt; do
@@ -294,7 +294,7 @@ while getopts "h?csr:e:" opt; do
     c)  create_creds_file
         exit 0
         ;;
-    s)  use_shibboleth=1
+    s)  use_shibboleth=true
         echo
         echo "Ansible provisioning will enable Shibboleth and Apache"
         echo
