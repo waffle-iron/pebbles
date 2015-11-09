@@ -318,7 +318,9 @@ add_docker_group
 patch_sources_list
 run_apt_update
 install_packages
-create_creds_file
+if [[ $deploy_roles =~ "worker," ]]; then
+    create_creds_file
+fi
 create_ansible_inventory
 clone_git_repo
 create_shared_secret
