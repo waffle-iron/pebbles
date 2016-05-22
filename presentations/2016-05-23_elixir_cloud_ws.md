@@ -3,16 +3,17 @@
 
 # Overview
 
-## Product 
+## Pouta Blueprints? 
 
 - web interface to resources provisioned in the cloud
 - open source project hosted at [GitHub](https://github.com/CSC-IT-Center-for-Science/pouta-blueprints)
 - developed by CSC - IT Center for Science 
 - buzzwords: Docker, Angular, RESTful, Ansible, self service, SAML2, notebook
+- PB for short
 
 ## Concepts
 
-- system admins make _blueprints_, e.g. configurations
+- system admins make _blueprints_, e.g. configurations or templates
 - users launch _instances_ of blueprints
     - currently instances can be containers or VMs
 - instances are time limited, quota limited, disposable
@@ -21,10 +22,10 @@
     - locally added by admin (via activation email)
     - based on SAML2 identity
 
-## Service
+## PB Service
 
 - CSC runs a Pouta Blueprints server
-- open to anyone with HAKA credentials
+- open to anyone with HAKA federated identity credentials
 - currently in public beta
 - blueprints for RStudio and IPython/Jupyter notebooks
 - available at https://pb.csc.fi
@@ -99,7 +100,9 @@ version of the exercises I made."
 - Pouta Blueprints is open source software for sharing your cloud resources
     - anyone is free to deploy a copy and contribute
 - pb.csc.fi is a pilot service operated by CSC
-    - hosts notebooks
+    - users can launch notebooks
     - open for Finnish researchers and students
 
-## Thanks! Questions, please
+## Thanks! 
+
+Questions, please!
