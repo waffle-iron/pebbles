@@ -5,6 +5,8 @@ from flask.ext.sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from sqlalchemy.ext.hybrid import hybrid_property, Comparator
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.schema import MetaData
 from itsdangerous import TimedJSONWebSignatureSerializer as Serializer
 import logging
 import uuid
@@ -42,6 +44,13 @@ NAME_ADJECTIVES = (
     'smiley',
 )
 
+metadata = MetaData(naming_convention={
+    "ix": 'ix_%(column_0_label)s',
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s"
+})
+
 
 class CaseInsensitiveComparator(Comparator):
     def __eq__(self, other):
@@ -58,6 +67,7 @@ def load_column(column):
 
 class User(db.Model):
     __tablename__ = 'users'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     _email = db.Column('email', db.String(MAX_EMAIL_LENGTH), unique=True)
@@ -191,6 +201,7 @@ class Group(db.Model):
 
 class Notification(db.Model):
     __tablename__ = 'notifications'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     broadcasted = db.Column(db.DateTime)
@@ -204,6 +215,7 @@ class Notification(db.Model):
 
 class Keypair(db.Model):
     __tablename__ = 'keypairs'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     user_id = db.Column(db.String(32), db.ForeignKey('users.id'))
@@ -225,6 +237,7 @@ class Keypair(db.Model):
 
 class ActivationToken(db.Model):
     __tablename__ = 'activation_tokens'
+    metadata = metadata
 
     token = db.Column(db.String(32), primary_key=True)
     user_id = db.Column(db.String(32), db.ForeignKey('users.id'))
@@ -236,6 +249,7 @@ class ActivationToken(db.Model):
 
 class Plugin(db.Model):
     __tablename__ = 'plugins'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     name = db.Column(db.String(32))
@@ -330,6 +344,7 @@ class BlueprintTemplate(db.Model):
 
 class Blueprint(db.Model):
     __tablename__ = 'blueprints'
+    metadata = metadata
     id = db.Column(db.String(32), primary_key=True)
     name = db.Column(db.String(MAX_NAME_LENGTH))
     template_id = db.Column(db.String(32), db.ForeignKey('blueprint_templates.id'))
@@ -380,6 +395,7 @@ class Instance(db.Model):
     )
 
     __tablename__ = 'instances'
+    metadata = metadata
     id = db.Column(db.String(32), primary_key=True)
     user_id = db.Column(db.String(32), db.ForeignKey('users.id'))
     blueprint_id = db.Column(db.String(32), db.ForeignKey('blueprints.id'))
@@ -457,6 +473,7 @@ class Instance(db.Model):
 
 class Lock(db.Model):
     __tablename__ = 'locks'
+    metadata = metadata
 
     lock_id = db.Column(db.String(64), primary_key=True, unique=True)
     acquired_at = db.Column(db.DateTime)
@@ -468,6 +485,7 @@ class Lock(db.Model):
 
 class Variable(db.Model):
     __tablename__ = 'variables'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     key = db.Column(db.String(MAX_VARIABLE_KEY_LENGTH), unique=True)
@@ -501,6 +519,10 @@ class Variable(db.Model):
             if Variable.query.count() and not force_sync:
                 return
         except OperationalError:
+            logging.warn("Database structure not present! Run migrations or"
+                         " configure db access!")
+            return
+        except InvalidRequestError:
             logging.warn("Database structure not present! Run migrations or"
                          " configure db access!")
             return
