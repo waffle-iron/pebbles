@@ -159,13 +159,30 @@ class User(db.Model):
         return hash(self.email)
 
 
-group_user = db.Table('groups_users', db.Column('group_id', db.String(32), db.ForeignKey('groups.id')), db.Column('user_id', db.String(32), db.ForeignKey('users.id')), db.PrimaryKeyConstraint('group_id', 'user_id'))
-group_banned_user = db.Table('groups_banned_users', db.Column('group_id', db.String(32), db.ForeignKey('groups.id')), db.Column('user_id', db.String(32), db.ForeignKey('users.id')), db.PrimaryKeyConstraint('group_id', 'user_id'))
-group_owner = db.Table('groups_owners', db.Column('group_id', db.String(32), db.ForeignKey('groups.id')), db.Column('owner_id', db.String(32), db.ForeignKey('users.id')), db.PrimaryKeyConstraint('group_id', 'owner_id'))
+group_user = db.Table('groups_users',
+                      metadata,
+                      db.Column('group_id', db.String(32), db.ForeignKey('groups.id')),
+                      db.Column('user_id', db.String(32), db.ForeignKey('users.id')),
+                      db.PrimaryKeyConstraint('group_id', 'user_id')
+                      )
+
+group_banned_user = db.Table('groups_banned_users', metadata,
+                             db.Column('group_id', db.String(32), db.ForeignKey('groups.id')),
+                             db.Column('user_id', db.String(32), db.ForeignKey('users.id')),
+                             db.PrimaryKeyConstraint('group_id', 'user_id')
+                             )
+
+group_owner = db.Table('groups_owners',
+                       metadata,
+                       db.Column('group_id', db.String(32), db.ForeignKey('groups.id')),
+                       db.Column('owner_id', db.String(32), db.ForeignKey('users.id')),
+                       db.PrimaryKeyConstraint('group_id', 'owner_id')
+                       )
 
 
 class Group(db.Model):
     __tablename__ = 'groups'
+    metadata = metadata
 
     id = db.Column(db.String(32), primary_key=True)
     name = db.Column(db.String(32))
@@ -287,6 +304,8 @@ class Plugin(db.Model):
 
 class BlueprintTemplate(db.Model):
     __tablename__ = 'blueprint_templates'
+    metadata = metadata
+
     id = db.Column(db.String(32), primary_key=True)
     name = db.Column(db.String(MAX_NAME_LENGTH))
     _config = db.Column('config', db.Text)
