@@ -20,6 +20,7 @@
     dest: "/etc/shibboleth/{{ item }}"
     force: yes
   with_items:
-    - idp_cert.pem
+    - idp_cert_haka.pem
+    - idp_cert_kalmar.pem
     - sp_cert.pem
     - sp_key.pem

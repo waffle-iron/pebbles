@@ -35,7 +35,7 @@
         security of your site. Stealing sessions via cookie theft is much easier with this disabled.
         -->
         <Sessions lifetime="28800" timeout="3600" relayState="ss:mem"
-                  checkAddress="false" handlerSSL="false" cookieProps="https">
+                  checkAddress="false" handlerSSL="true" cookieProps="https">
 
             <!--
             Configures SSO for a default IdP. To allow for >1 IdP, remove
@@ -43,10 +43,16 @@
             (Set discoveryProtocol to "WAYF" for legacy Shibboleth WAYF support.)
             You can also override entityID on /Login query string, or in RequestMap/htaccess.
             -->
-        <SSO discoveryProtocol="SAMLDS" discoveryURL="{{ shibboleth_discovery_url }}">
+        <SSO discoveryProtocol="SAMLDS" discoveryURL="{{ shibboleth_discovery_url_haka }}">
               SAML2
         </SSO>
 
+
+        <SessionInitiator type="Chaining" Location="/kalmar" isDefault="false" id="kalmar" relayState="cookie">
+        <SessionInitiator type="SAML2" defaultACSIndex="1" acsByIndex="false" template="bindingTemplate.html"/>
+        <SessionInitiator type="SAMLDS" URL="{{ shibboleth_discovery_url_kalmar }}"/>
+        </SessionInitiator>
+ 
 
 	    <md:AssertionConsumerService Location="/api/v1/acs" index="1"
 		    Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"                                          
@@ -76,11 +82,17 @@
             helpLocation="/about.html"
             styleSheet="/shibboleth-sp/main.css"/>
 
-        <!-- Example of remotely supplied batch of signed metadata. -->
-        <MetadataProvider type="XML" uri="{{ shibboleth_metadata_url }}"
-               backingFilePath="metadata.xml" reloadInterval="7200">
+        <!-- Remotely supplied batch of signed metadata for haka -->
+        <MetadataProvider type="XML" uri="{{ shibboleth_metadata_url_haka }}"
+               backingFilePath="haka-metadata.xml" reloadInterval="7200">
             <MetadataFilter type="RequireValidUntil" maxValidityInterval="2419200"/>
-            <MetadataFilter type="Signature" certificate="idp_cert.pem"/>
+            <MetadataFilter type="Signature" certificate="idp_cert_haka.pem"/>
+        </MetadataProvider>
+
+        <!-- Remotely supplied batch of signed metadata for kalmar -->
+        <MetadataProvider type="XML" uri="{{ shibboleth_metadata_url_kalmar }}"
+               backingFilePath="kalmar-metadata.xml" reloadInterval="7200">
+            <MetadataFilter type="Signature" certificate="idp_cert_kalmar.pem"/>
         </MetadataProvider>
 
         <!-- Map to extract attributes from SAML assertions. -->

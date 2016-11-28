@@ -116,7 +116,7 @@ populate_sso_data()
     fi
 
     echo "Copying SSO certificates to /var/lib/pb/sso/"
-    sudo cp -v $p_sso_data_dir/{sp_key,sp_cert,idp_cert}.pem /var/lib/pb/sso/
+    sudo cp -v $p_sso_data_dir/{sp_key,sp_cert,idp_cert_haka,idp_cert_kalmar}.pem /var/lib/pb/sso/
 
     if [ -f /etc/redhat-release ]; then
         echo "Enabling container access to sso_data in SELinux"
@@ -204,6 +204,7 @@ get_domain_name()
     domain_name=$(dig -x $p_ip +short | head -1)
     # dig will output the root dot also, we get rid of that with trailing conditional replace
     domain_name=${domain_name/%./}
+    domain_name="pb2.csc.fi"
     if [ "xxx$domain_name" == "xxx" ]; then
        echo "NOT FOUND"
        echo
