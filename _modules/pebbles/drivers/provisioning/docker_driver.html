@@ -1,0 +1,905 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>pebbles.drivers.provisioning.docker_driver &#8212; pebbles 4.0.0.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/alabaster.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '4.0.0.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+   
+  <link rel="stylesheet" href="../../../../_static/custom.css" type="text/css" />
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
+
+  </head>
+  <body role="document">
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for pebbles.drivers.provisioning.docker_driver</h1><div class="highlight"><pre>
+<span></span><span class="c1"># &quot;&quot;&quot;</span>
+<span class="c1"># ToDo: Document user/admin level usage of docker driver here, possibly including</span>
+<span class="c1">#</span>
+<span class="c1"># screenshots and what variables can be set or overriden.</span>
+<span class="c1"># &quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">json</span>
+<span class="kn">import</span> <span class="nn">time</span>
+<span class="kn">import</span> <span class="nn">uuid</span>
+<span class="kn">from</span> <span class="nn">docker.errors</span> <span class="k">import</span> <span class="n">APIError</span>
+<span class="kn">from</span> <span class="nn">docker.tls</span> <span class="k">import</span> <span class="n">TLSConfig</span>
+<span class="kn">from</span> <span class="nn">docker.utils</span> <span class="k">import</span> <span class="n">parse_bytes</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+<span class="kn">from</span> <span class="nn">requests</span> <span class="k">import</span> <span class="ne">ConnectionError</span>
+<span class="kn">from</span> <span class="nn">requests.exceptions</span> <span class="k">import</span> <span class="n">ReadTimeout</span>
+<span class="kn">from</span> <span class="nn">pebbles.client</span> <span class="k">import</span> <span class="n">PBClient</span>
+<span class="kn">from</span> <span class="nn">pebbles.drivers.provisioning</span> <span class="k">import</span> <span class="n">base_driver</span>
+<span class="kn">import</span> <span class="nn">docker</span>
+<span class="kn">from</span> <span class="nn">pebbles.models</span> <span class="k">import</span> <span class="n">Instance</span>
+<span class="kn">from</span> <span class="nn">pebbles.services.openstack_service</span> <span class="k">import</span> <span class="n">OpenStackService</span>
+<span class="kn">import</span> <span class="nn">pebbles.tasks</span>
+<span class="kn">from</span> <span class="nn">lockfile</span> <span class="k">import</span> <span class="n">locked</span><span class="p">,</span> <span class="n">LockTimeout</span>
+<span class="kn">import</span> <span class="nn">socket</span>
+
+<span class="n">DD_STATE_SPAWNED</span> <span class="o">=</span> <span class="s1">&#39;spawned&#39;</span>
+<span class="n">DD_STATE_ACTIVE</span> <span class="o">=</span> <span class="s1">&#39;active&#39;</span>
+<span class="n">DD_STATE_INACTIVE</span> <span class="o">=</span> <span class="s1">&#39;inactive&#39;</span>
+<span class="n">DD_STATE_REMOVED</span> <span class="o">=</span> <span class="s1">&#39;removed&#39;</span>
+
+<span class="n">DD_HOST_LIFETIME</span> <span class="o">=</span> <span class="mi">3600</span> <span class="o">*</span> <span class="mi">4</span>
+<span class="n">DD_HOST_LIFETIME_LOW</span> <span class="o">=</span> <span class="mi">300</span>
+
+<span class="n">DD_PROVISION_RETRIES</span> <span class="o">=</span> <span class="mi">10</span>
+<span class="n">DD_PROVISION_RETRY_SLEEP</span> <span class="o">=</span> <span class="mi">30</span>
+<span class="n">DD_MAX_HOST_ERRORS</span> <span class="o">=</span> <span class="mi">5</span>
+
+<span class="n">DD_RUNTIME_PATH</span> <span class="o">=</span> <span class="s1">&#39;/webapps/pebbles/run&#39;</span>
+<span class="n">DD_IMAGE_DIRECTORY</span> <span class="o">=</span> <span class="s1">&#39;/images&#39;</span>
+
+<span class="n">DD_CLIENT_TIMEOUT</span> <span class="o">=</span> <span class="mi">180</span>  <span class="c1"># seconds</span>
+
+<span class="n">PEBBLES_SSH_KEY_LOCATION</span> <span class="o">=</span> <span class="s1">&#39;/home/pebbles/.ssh/id_rsa&#39;</span>
+
+
+<span class="k">class</span> <span class="nc">DockerDriverAccessProxy</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    ToDo: why is the docker driver split into a proxy and proper?</span>
+<span class="sd">    Is it to abstract away the use of OpenStack to provision hosts?</span>
+<span class="sd">    -jyrsa</span>
+<span class="sd">    2016-11-28</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">save_as_json</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">data_file</span><span class="p">):</span>
+            <span class="n">ts</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span>
+            <span class="n">os</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="n">ts</span> <span class="o">-</span> <span class="n">ts</span> <span class="o">%</span> <span class="mi">3600</span><span class="p">))</span>
+
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="s1">&#39;w&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">df</span><span class="p">:</span>
+            <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">df</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">get_docker_client</span><span class="p">(</span><span class="n">docker_url</span><span class="p">):</span>
+        <span class="c1"># TODO: figure out why server verification does not work (crls?)</span>
+        <span class="n">tls_config</span> <span class="o">=</span> <span class="n">TLSConfig</span><span class="p">(</span>
+            <span class="n">client_cert</span><span class="o">=</span><span class="p">(</span>
+                <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/client_cert.pem&#39;</span> <span class="o">%</span> <span class="n">DD_RUNTIME_PATH</span><span class="p">,</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/client_key.pem&#39;</span> <span class="o">%</span> <span class="n">DD_RUNTIME_PATH</span><span class="p">),</span>
+            <span class="c1">#   ca_cert=&#39;%s/ca_cert.pem&#39; % DD_RUNTIME_PATH,</span>
+            <span class="n">verify</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">docker_client</span> <span class="o">=</span> <span class="n">docker</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">base_url</span><span class="o">=</span><span class="n">docker_url</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="n">tls_config</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">DD_CLIENT_TIMEOUT</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">docker_client</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">load_json</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="n">default</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">data_file</span><span class="p">):</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">df</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">df</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">default</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">get_openstack_service</span><span class="p">(</span><span class="n">config</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">OpenStackService</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">get_pb_client</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">api_base_url</span><span class="p">,</span> <span class="n">ssl_verify</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">PBClient</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">api_base_url</span><span class="p">,</span> <span class="n">ssl_verify</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">run_ansible_on_host</span><span class="p">(</span><span class="n">host</span><span class="p">,</span> <span class="n">logger</span><span class="p">,</span> <span class="n">config</span><span class="p">):</span>
+        <span class="kn">from</span> <span class="nn">ansible.plugins.callback</span> <span class="k">import</span> <span class="n">CallbackBase</span>
+        <span class="c1"># A rough logger that logs dict messages to standard logger</span>
+
+        <span class="k">class</span> <span class="nc">ResultCallback</span><span class="p">(</span><span class="n">CallbackBase</span><span class="p">):</span>
+
+            <span class="k">def</span> <span class="nf">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+                <span class="nb">super</span><span class="p">(</span><span class="n">ResultCallback</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+
+            <span class="k">def</span> <span class="nf">v2_runner_on_ok</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;ok :&#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">_result</span><span class="p">),</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_runner_on_failed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">_result</span><span class="p">,</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_runner_on_skipped</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">_result</span><span class="p">,</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_runner_on_unreachable</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">_result</span><span class="p">,</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_no_hosts_matched</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;no hosts matched!&#39;</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_no_hosts_remaining</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;NO MORE HOSTS LEFT&#39;</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_task_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;starting task: &#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">task</span><span class="p">))</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">playbook</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;starting playbook&#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">playbook</span><span class="p">),</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_play_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">play</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;starting play&#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">play</span><span class="p">),</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="nf">v2_playbook_on_stats</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stats</span><span class="p">,</span> <span class="n">info</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s1">&#39;STATS FOR PLAY&#39;</span><span class="p">)</span>
+                <span class="n">hosts</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">processed</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">dark</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">changed</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">skipped</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">ok</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+                <span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">hosts</span><span class="p">:</span>
+                    <span class="n">t</span> <span class="o">=</span> <span class="n">stats</span><span class="o">.</span><span class="n">summarize</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">t</span><span class="p">))</span>
+
+            <span class="k">def</span> <span class="nf">log</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">param</span><span class="p">,</span> <span class="n">info</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">info</span><span class="p">:</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">param</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">param</span><span class="p">))</span>
+
+        <span class="kn">from</span> <span class="nn">ansible.parsing.dataloader</span> <span class="k">import</span> <span class="n">DataLoader</span>
+        <span class="kn">from</span> <span class="nn">ansible.inventory</span> <span class="k">import</span> <span class="n">Inventory</span><span class="p">,</span> <span class="n">Group</span><span class="p">,</span> <span class="n">Host</span>
+        <span class="kn">from</span> <span class="nn">ansible.executor</span> <span class="k">import</span> <span class="n">playbook_executor</span>
+        <span class="kn">from</span> <span class="nn">ansible.vars</span> <span class="k">import</span> <span class="n">VariableManager</span>
+        <span class="kn">from</span> <span class="nn">collections</span> <span class="k">import</span> <span class="n">namedtuple</span>
+
+        <span class="n">Options</span> <span class="o">=</span> <span class="n">namedtuple</span><span class="p">(</span>
+            <span class="s1">&#39;Options&#39;</span><span class="p">,</span>
+            <span class="p">[</span>
+                <span class="s1">&#39;connection&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;module_path&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;forks&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;become&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;become_method&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;become_user&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;check&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;ansible_user&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;listhosts&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;listtasks&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;listtags&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;syntax&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;ssh_private_key_file&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;host_key_checking&#39;</span>
+            <span class="p">]</span>
+        <span class="p">)</span>
+
+        <span class="n">options</span> <span class="o">=</span> <span class="n">Options</span><span class="p">(</span>
+            <span class="n">connection</span><span class="o">=</span><span class="s1">&#39;ssh&#39;</span><span class="p">,</span>
+            <span class="n">become</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+            <span class="n">become_method</span><span class="o">=</span><span class="s1">&#39;sudo&#39;</span><span class="p">,</span>
+            <span class="n">become_user</span><span class="o">=</span><span class="s1">&#39;root&#39;</span><span class="p">,</span>
+            <span class="n">check</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">module_path</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+            <span class="n">forks</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
+            <span class="n">ansible_user</span><span class="o">=</span><span class="s1">&#39;cloud-user&#39;</span><span class="p">,</span>
+            <span class="n">listhosts</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">listtasks</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">listtags</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">syntax</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">ssh_private_key_file</span><span class="o">=</span><span class="n">PEBBLES_SSH_KEY_LOCATION</span><span class="p">,</span>
+            <span class="n">host_key_checking</span><span class="o">=</span><span class="kc">False</span>
+        <span class="p">)</span>
+
+        <span class="n">variable_manager</span> <span class="o">=</span> <span class="n">VariableManager</span><span class="p">()</span>
+        <span class="n">loader</span> <span class="o">=</span> <span class="n">DataLoader</span><span class="p">()</span>
+
+        <span class="n">a_host</span> <span class="o">=</span> <span class="n">Host</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;private_ip&#39;</span><span class="p">])</span>
+        <span class="n">a_host</span><span class="o">.</span><span class="n">set_variable</span><span class="p">(</span><span class="s1">&#39;ansible_host&#39;</span><span class="p">,</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;private_ip&#39;</span><span class="p">])</span>
+        <span class="n">a_group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s1">&#39;notebook_host&#39;</span><span class="p">)</span>
+        <span class="n">a_group</span><span class="o">.</span><span class="n">add_host</span><span class="p">(</span><span class="n">a_host</span><span class="p">)</span>
+        <span class="n">inventory</span> <span class="o">=</span> <span class="n">Inventory</span><span class="p">(</span><span class="n">loader</span><span class="o">=</span><span class="n">loader</span><span class="p">,</span> <span class="n">variable_manager</span><span class="o">=</span><span class="n">variable_manager</span><span class="p">,</span> <span class="n">host_list</span><span class="o">=</span><span class="p">[</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;private_ip&#39;</span><span class="p">]])</span>
+        <span class="n">inventory</span><span class="o">.</span><span class="n">add_group</span><span class="p">(</span><span class="n">a_group</span><span class="p">)</span>
+        <span class="n">variable_manager</span><span class="o">.</span><span class="n">set_inventory</span><span class="p">(</span><span class="n">inventory</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;HOST:&#39;</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">a_host</span><span class="o">.</span><span class="n">serialize</span><span class="p">()</span>	<span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;HOSTs from inventory:&#39;</span><span class="p">)</span>
+        <span class="c1"># for some reason setting these before adding the host to inventory didn&#39;t work so well</span>
+        <span class="c1"># ToDo: read up on variable_manager and figure out a more elegant way to set the variables</span>
+        <span class="k">for</span> <span class="n">h_</span> <span class="ow">in</span> <span class="n">inventory</span><span class="o">.</span><span class="n">get_hosts</span><span class="p">():</span>
+            <span class="n">h_</span><span class="o">.</span><span class="n">set_variable</span><span class="p">(</span><span class="s1">&#39;ansible_user&#39;</span><span class="p">,</span> <span class="s1">&#39;cloud-user&#39;</span><span class="p">)</span>
+            <span class="n">h_</span><span class="o">.</span><span class="n">set_variable</span><span class="p">(</span><span class="s1">&#39;ansible_ssh_common_args&#39;</span><span class="p">,</span> <span class="s1">&#39;-o StrictHostKeyChecking=no&#39;</span><span class="p">)</span>
+            <span class="n">h_</span><span class="o">.</span><span class="n">set_variable</span><span class="p">(</span><span class="s1">&#39;ansible_ssh_private_key_file&#39;</span><span class="p">,</span> <span class="s1">&#39;/home/pebbles/.ssh/id_rsa&#39;</span><span class="p">)</span>
+        <span class="n">extra_vars</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
+        <span class="n">extra_vars</span><span class="p">[</span><span class="s1">&#39;ansible_ssh_extra_args&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;-o StrictHostKeyChecking=no&#39;</span>
+
+        <span class="k">if</span> <span class="s1">&#39;DD_HOST_DATA_VOLUME_DEVICE&#39;</span> <span class="ow">in</span> <span class="n">config</span><span class="p">:</span>
+            <span class="n">extra_vars</span><span class="p">[</span><span class="s1">&#39;notebook_host_block_dev_path&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_DATA_VOLUME_DEVICE&#39;</span><span class="p">]</span>
+
+        <span class="n">variable_manager</span><span class="o">.</span><span class="n">extra_vars</span> <span class="o">=</span> <span class="n">extra_vars</span>
+        <span class="n">pb_executor</span> <span class="o">=</span> <span class="n">playbook_executor</span><span class="o">.</span><span class="n">PlaybookExecutor</span><span class="p">(</span>
+            <span class="n">playbooks</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;/webapps/pebbles/source/ansible/notebook_playbook.yml&#39;</span><span class="p">],</span>
+            <span class="n">inventory</span><span class="o">=</span><span class="n">inventory</span><span class="p">,</span>
+            <span class="n">variable_manager</span><span class="o">=</span><span class="n">variable_manager</span><span class="p">,</span>
+            <span class="n">loader</span><span class="o">=</span><span class="n">loader</span><span class="p">,</span>
+            <span class="n">options</span><span class="o">=</span><span class="n">options</span><span class="p">,</span>
+            <span class="n">passwords</span><span class="o">=</span><span class="kc">None</span>
+        <span class="p">)</span>
+        <span class="n">rescb</span> <span class="o">=</span> <span class="n">ResultCallback</span><span class="p">()</span>
+        <span class="n">pb_executor</span><span class="o">.</span><span class="n">_tqm</span><span class="o">.</span><span class="n">_stdout_callback</span> <span class="o">=</span> <span class="n">rescb</span>
+
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;_prepare_host(): running ansible&#39;</span><span class="p">)</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;_prepare_host(): inventory hosts&#39;</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">h_</span> <span class="ow">in</span> <span class="n">inventory</span><span class="o">.</span><span class="n">get_hosts</span><span class="p">():</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">h_</span><span class="o">.</span><span class="n">serialize</span><span class="p">())</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">h_</span><span class="o">.</span><span class="n">get_vars</span><span class="p">())</span>
+        <span class="n">pb_executor</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+        <span class="n">stats</span> <span class="o">=</span> <span class="n">pb_executor</span><span class="o">.</span><span class="n">_tqm</span><span class="o">.</span><span class="n">_stats</span>
+        <span class="n">run_success</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="n">hosts_list</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">stats</span><span class="o">.</span><span class="n">processed</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">hosts_list</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;no hosts handled&#39;</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">hosts_list</span><span class="p">:</span>
+            <span class="n">t</span> <span class="o">=</span> <span class="n">stats</span><span class="o">.</span><span class="n">summarize</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">t</span><span class="p">[</span><span class="s1">&#39;unreachable&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">t</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">run_success</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="n">run_success</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_prepare_host(): run successfull&#39;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_prepare_host(): run failed&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">pb_executor</span><span class="p">,</span> <span class="s1">&#39;_unreachable_hosts&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;UNREACHABLE HOSTS &#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">pb_executor</span><span class="o">.</span><span class="n">_unreachable_hosts</span><span class="p">))</span>
+        <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">pb_executor</span><span class="p">,</span> <span class="s1">&#39;_failed_hosts&#39;</span><span class="p">,</span> <span class="kc">False</span><span class="p">):</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;FAILED_HOSTS &#39;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">pb_executor</span><span class="o">.</span><span class="n">_failed_hosts</span><span class="p">))</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;run_ansible_on_host(</span><span class="si">%s</span><span class="s1">) failed&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_prepare_host():  done running ansible&#39;</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">proxy_add_route</span><span class="p">(</span><span class="n">route_id</span><span class="p">,</span> <span class="n">target_url</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="n">pebbles</span><span class="o">.</span><span class="n">tasks</span><span class="o">.</span><span class="n">proxy_add_route</span><span class="o">.</span><span class="n">delay</span><span class="p">(</span><span class="n">route_id</span><span class="p">,</span> <span class="n">target_url</span><span class="p">,</span> <span class="n">options</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">proxy_remove_route</span><span class="p">(</span><span class="n">route_id</span><span class="p">):</span>
+        <span class="n">pebbles</span><span class="o">.</span><span class="n">tasks</span><span class="o">.</span><span class="n">proxy_remove_route</span><span class="o">.</span><span class="n">delay</span><span class="p">(</span><span class="n">route_id</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">get_image_names</span><span class="p">():</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">file_name</span><span class="p">[:</span><span class="o">-</span><span class="nb">len</span><span class="p">(</span><span class="s1">&#39;.img&#39;</span><span class="p">)]</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;.&#39;</span><span class="p">,</span> <span class="s1">&#39;/&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">file_name</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="n">DD_IMAGE_DIRECTORY</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">DD_IMAGE_DIRECTORY</span><span class="p">,</span> <span class="n">file_name</span><span class="p">))</span> <span class="ow">and</span> <span class="n">file_name</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s1">&#39;.img&#39;</span><span class="p">)</span>
+                <span class="p">]</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">wait_for_port</span><span class="p">(</span><span class="n">ip_address</span><span class="p">,</span> <span class="n">port</span><span class="p">,</span> <span class="n">max_wait_secs</span><span class="o">=</span><span class="mi">60</span><span class="p">):</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">socket</span><span class="p">(</span><span class="n">socket</span><span class="o">.</span><span class="n">AF_INET</span><span class="p">,</span> <span class="n">socket</span><span class="o">.</span><span class="n">SOCK_STREAM</span><span class="p">)</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">settimeout</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
+        <span class="n">is_port_active</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">while</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">-</span> <span class="n">start</span> <span class="o">&lt;</span> <span class="n">max_wait_secs</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">connect_ex</span><span class="p">((</span><span class="n">ip_address</span><span class="p">,</span> <span class="n">port</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">result</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">is_port_active</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="k">break</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">is_port_active</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Timeout: Could not listen to port&#39;</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="DockerDriver"><a class="viewcode-back" href="../../../../drivers.html#pebbles.drivers.provisioning.docker_driver.DockerDriver">[docs]</a><span class="k">class</span> <span class="nc">DockerDriver</span><span class="p">(</span><span class="n">base_driver</span><span class="o">.</span><span class="n">ProvisioningDriverBase</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot; ToDo: document what the docker driver does for an admin/developer here</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="nf">get_configuration</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="kn">from</span> <span class="nn">pebbles.drivers.provisioning.docker_driver_config</span> <span class="k">import</span> <span class="n">CONFIG</span>
+
+        <span class="n">config</span> <span class="o">=</span> <span class="n">CONFIG</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">image_names</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span><span class="o">.</span><span class="n">get_image_names</span><span class="p">()</span>
+        <span class="n">config</span><span class="p">[</span><span class="s1">&#39;schema&#39;</span><span class="p">][</span><span class="s1">&#39;properties&#39;</span><span class="p">][</span><span class="s1">&#39;docker_image&#39;</span><span class="p">][</span><span class="s1">&#39;enum&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">image_names</span>
+
+        <span class="k">return</span> <span class="n">config</span>
+
+    <span class="k">def</span> <span class="nf">_get_ap</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;_ap&#39;</span><span class="p">,</span> <span class="kc">None</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_ap</span> <span class="o">=</span> <span class="n">DockerDriverAccessProxy</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ap</span>
+
+    <span class="k">def</span> <span class="nf">do_update_connectivity</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s1">&#39;do_update_connectivity not implemented&#39;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">do_provision</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;do_provision </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+        <span class="n">log_uploader</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_prov_log_uploader</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">,</span> <span class="n">log_type</span><span class="o">=</span><span class="s1">&#39;provisioning&#39;</span><span class="p">)</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Provisioning Docker based instance (</span><span class="si">%s</span><span class="s2">)</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+        <span class="c1"># in shutdown mode we bail out right away</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_SHUTDOWN_MODE&#39;</span><span class="p">]:</span>
+            <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;system is in shutdown mode, cannot provision new instances</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">RuntimeWarning</span><span class="p">(</span><span class="s1">&#39;Shutdown mode, no provisioning&#39;</span><span class="p">)</span>
+
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+        <span class="n">pbclient</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_pb_client</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INTERNAL_API_BASE_URL&#39;</span><span class="p">],</span> <span class="n">ssl_verify</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">lock_id</span> <span class="o">=</span> <span class="s1">&#39;dd_host:</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="s1">&#39;global&#39;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">lock_res</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">obtain_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="n">lock_res</span><span class="p">:</span>
+                <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
+                <span class="n">lock_res</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">obtain_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_do_provision</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()))</span>
+                <span class="k">return</span> <span class="n">Instance</span><span class="o">.</span><span class="n">STATE_RUNNING</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">RuntimeWarning</span><span class="p">,</span> <span class="ne">ConnectionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;_do_provision() failed for </span><span class="si">%s</span><span class="s1"> due to </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">instance_id</span><span class="p">,</span> <span class="n">e</span><span class="p">))</span>
+                <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;provisioning failed, queueing again to retry</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">Instance</span><span class="o">.</span><span class="n">STATE_QUEUEING</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">pbclient</span><span class="o">.</span><span class="n">release_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+            <span class="c1"># give proxy and container some time to initialize</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_do_provision</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+
+        <span class="n">pbclient</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_pb_client</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INTERNAL_API_BASE_URL&#39;</span><span class="p">],</span> <span class="n">ssl_verify</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+        <span class="n">log_uploader</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_prov_log_uploader</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">,</span> <span class="n">log_type</span><span class="o">=</span><span class="s1">&#39;provisioning&#39;</span><span class="p">)</span>
+
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">get_instance_description</span><span class="p">(</span><span class="n">instance_id</span><span class="p">)</span>
+
+        <span class="c1"># fetch config</span>
+        <span class="n">blueprint</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">get_blueprint_description</span><span class="p">(</span><span class="n">instance</span><span class="p">[</span><span class="s1">&#39;blueprint_id&#39;</span><span class="p">])</span>
+        <span class="n">blueprint_config</span> <span class="o">=</span> <span class="n">blueprint</span><span class="p">[</span><span class="s1">&#39;full_config&#39;</span><span class="p">]</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;selecting host...&quot;</span><span class="p">)</span>
+
+        <span class="n">docker_hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_select_hosts</span><span class="p">(</span><span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;consumed_slots&#39;</span><span class="p">],</span> <span class="n">cur_ts</span><span class="p">)</span>
+        <span class="n">selected_host</span> <span class="o">=</span> <span class="n">docker_hosts</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+
+        <span class="n">docker_client</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_docker_client</span><span class="p">(</span><span class="n">selected_host</span><span class="p">[</span><span class="s1">&#39;docker_url&#39;</span><span class="p">])</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;done</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">container_name</span> <span class="o">=</span> <span class="n">instance</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+
+        <span class="c1"># total_memory is set to 3 times the size of RAM limit</span>
+        <span class="n">host_config</span> <span class="o">=</span> <span class="n">docker_client</span><span class="o">.</span><span class="n">create_host_config</span><span class="p">(</span>
+            <span class="n">mem_limit</span><span class="o">=</span><span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;memory_limit&#39;</span><span class="p">],</span>
+            <span class="n">memswap_limit</span><span class="o">=</span><span class="n">parse_bytes</span><span class="p">(</span><span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;memory_limit&#39;</span><span class="p">])</span> <span class="o">*</span> <span class="mi">3</span><span class="p">,</span>
+            <span class="n">publish_all_ports</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="n">proxy_route</span> <span class="o">=</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span>
+
+        <span class="n">config</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;image&#39;</span><span class="p">:</span> <span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;docker_image&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">container_name</span><span class="p">,</span>
+            <span class="s1">&#39;labels&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;slots&#39;</span><span class="p">:</span> <span class="s1">&#39;</span><span class="si">%d</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;consumed_slots&#39;</span><span class="p">]},</span>
+            <span class="s1">&#39;host_config&#39;</span><span class="p">:</span> <span class="n">host_config</span><span class="p">,</span>
+            <span class="s1">&#39;environment&#39;</span><span class="p">:</span> <span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;environment_vars&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">(),</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">blueprint_config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;launch_command&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)):</span>
+            <span class="n">launch_command</span> <span class="o">=</span> <span class="n">blueprint_config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;launch_command&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
+                <span class="n">proxy_path</span><span class="o">=</span><span class="s1">&#39;/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">proxy_route</span>
+            <span class="p">)</span>
+            <span class="n">config</span><span class="p">[</span><span class="s1">&#39;command&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">launch_command</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;creating container &#39;</span><span class="si">%s</span><span class="s2">&#39;</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">container_name</span><span class="p">)</span>
+        <span class="n">container</span> <span class="o">=</span> <span class="n">docker_client</span><span class="o">.</span><span class="n">create_container</span><span class="p">(</span><span class="o">**</span><span class="n">config</span><span class="p">)</span>
+        <span class="n">container_id</span> <span class="o">=</span> <span class="n">container</span><span class="p">[</span><span class="s1">&#39;Id&#39;</span><span class="p">]</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;starting container &#39;</span><span class="si">%s</span><span class="s2">&#39;</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">container_name</span><span class="p">)</span>
+        <span class="n">docker_client</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">container_id</span><span class="p">)</span>
+
+        <span class="c1"># get the public port</span>
+        <span class="n">ports</span> <span class="o">=</span> <span class="n">docker_client</span><span class="o">.</span><span class="n">port</span><span class="p">(</span><span class="n">container_id</span><span class="p">,</span> <span class="n">blueprint_config</span><span class="p">[</span><span class="s1">&#39;internal_port&#39;</span><span class="p">])</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">ports</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">public_port</span> <span class="o">=</span> <span class="n">ports</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s1">&#39;HostPort&#39;</span><span class="p">]</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_ap</span><span class="o">.</span><span class="n">wait_for_port</span><span class="p">(</span><span class="n">selected_host</span><span class="p">[</span><span class="s1">&#39;private_ip&#39;</span><span class="p">],</span> <span class="nb">int</span><span class="p">(</span><span class="n">public_port</span><span class="p">))</span>
+            <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+                <span class="n">log_uploader</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Could not check if the port used in provisioning is listening&quot;</span><span class="p">)</span>
+
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Expected exactly one mapped port&#39;</span><span class="p">)</span>
+
+        <span class="n">instance_data</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;endpoints&#39;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="p">{</span>
+                    <span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="s1">&#39;https&#39;</span><span class="p">,</span>
+                    <span class="s1">&#39;access&#39;</span><span class="p">:</span> <span class="s1">&#39;https://</span><span class="si">%s</span><span class="s1">:</span><span class="si">%s</span><span class="s1">/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;PUBLIC_IPV4&#39;</span><span class="p">],</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;EXTERNAL_HTTPS_PORT&#39;</span><span class="p">],</span>
+                        <span class="s1">&#39;notebooks/&#39;</span> <span class="o">+</span> <span class="n">proxy_route</span>
+                    <span class="p">)</span>
+                <span class="p">},</span>
+            <span class="p">],</span>
+            <span class="s1">&#39;docker_url&#39;</span><span class="p">:</span> <span class="n">selected_host</span><span class="p">[</span><span class="s1">&#39;docker_url&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;docker_host_id&#39;</span><span class="p">:</span> <span class="n">selected_host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;proxy_route&#39;</span><span class="p">:</span> <span class="n">proxy_route</span><span class="p">,</span>
+        <span class="p">}</span>
+
+        <span class="n">pbclient</span><span class="o">.</span><span class="n">do_instance_patch</span><span class="p">(</span>
+            <span class="n">instance_id</span><span class="p">,</span>
+            <span class="p">{</span>
+                <span class="c1">#                &#39;public_ip&#39;: self.config[&#39;PUBLIC_IPV4&#39;],</span>
+                <span class="s1">&#39;instance_data&#39;</span><span class="p">:</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">instance_data</span><span class="p">),</span>
+            <span class="p">}</span>
+        <span class="p">)</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;adding route</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="n">options</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">proxy_options</span> <span class="o">=</span> <span class="n">blueprint_config</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;proxy_options&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">proxy_options</span><span class="p">:</span>
+            <span class="n">proxy_rewrite</span> <span class="o">=</span> <span class="n">proxy_options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;proxy_rewrite&#39;</span><span class="p">)</span>
+            <span class="n">proxy_redirect</span> <span class="o">=</span> <span class="n">proxy_options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;proxy_redirect&#39;</span><span class="p">)</span>
+            <span class="n">set_host_header</span> <span class="o">=</span> <span class="n">proxy_options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;set_host_header&#39;</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="n">proxy_rewrite</span><span class="p">:</span>
+                <span class="n">options</span><span class="p">[</span><span class="s1">&#39;proxy_rewrite&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">proxy_rewrite</span>
+            <span class="k">if</span> <span class="n">proxy_redirect</span><span class="p">:</span>
+                <span class="n">options</span><span class="p">[</span><span class="s1">&#39;proxy_redirect&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">proxy_redirect</span>
+            <span class="k">if</span> <span class="n">set_host_header</span><span class="p">:</span>
+                <span class="n">options</span><span class="p">[</span><span class="s1">&#39;set_host_header&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">set_host_header</span>
+
+        <span class="n">ap</span><span class="o">.</span><span class="n">proxy_add_route</span><span class="p">(</span>
+            <span class="n">proxy_route</span><span class="p">,</span>
+            <span class="s1">&#39;http://</span><span class="si">%s</span><span class="s1">:</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">selected_host</span><span class="p">[</span><span class="s1">&#39;private_ip&#39;</span><span class="p">],</span> <span class="n">public_port</span><span class="p">),</span>
+            <span class="n">options</span>
+        <span class="p">)</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;provisioning done for </span><span class="si">%s</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">do_deprovision</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">):</span>
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+        <span class="n">pbclient</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_pb_client</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INTERNAL_API_BASE_URL&#39;</span><span class="p">],</span> <span class="n">ssl_verify</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+        <span class="n">lock_id</span> <span class="o">=</span> <span class="s1">&#39;dd_host:</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="s1">&#39;global&#39;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">lock_res</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">obtain_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="n">lock_res</span><span class="p">:</span>
+                <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
+                <span class="n">lock_res</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">obtain_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_do_deprovision</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">pbclient</span><span class="o">.</span><span class="n">release_lock</span><span class="p">(</span><span class="n">lock_id</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_do_deprovision</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;do_deprovision </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+
+        <span class="n">pbclient</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_pb_client</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INTERNAL_API_BASE_URL&#39;</span><span class="p">],</span> <span class="n">ssl_verify</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">pbclient</span><span class="o">.</span><span class="n">get_instance_description</span><span class="p">(</span><span class="n">instance_id</span><span class="p">)</span>
+        <span class="n">log_uploader</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_prov_log_uploader</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="n">instance_id</span><span class="p">,</span> <span class="n">log_type</span><span class="o">=</span><span class="s1">&#39;deprovisioning&#39;</span><span class="p">)</span>
+
+        <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Deprovisioning Docker based instance (</span><span class="si">%s</span><span class="s2">)</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">proxy_route</span> <span class="o">=</span> <span class="n">instance</span><span class="p">[</span><span class="s1">&#39;instance_data&#39;</span><span class="p">][</span><span class="s1">&#39;proxy_route&#39;</span><span class="p">]</span>
+            <span class="n">ap</span><span class="o">.</span><span class="n">proxy_remove_route</span><span class="p">(</span><span class="n">proxy_route</span><span class="p">)</span>
+            <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;removed route</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;do_deprovision: No proxy route in instance data for </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">instance</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">Instance</span><span class="o">.</span><span class="n">STATE_DELETED</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;do_deprovision: instance already deleted </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">docker_url</span> <span class="o">=</span> <span class="n">instance</span><span class="p">[</span><span class="s1">&#39;instance_data&#39;</span><span class="p">][</span><span class="s1">&#39;docker_url&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;no docker url for instance </span><span class="si">%s</span><span class="s1">, assuming provisioning has failed&#39;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="n">docker_client</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_docker_client</span><span class="p">(</span><span class="n">docker_url</span><span class="p">)</span>
+
+        <span class="n">container_name</span> <span class="o">=</span> <span class="n">instance</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">docker_client</span><span class="o">.</span><span class="n">remove_container</span><span class="p">(</span><span class="n">container_name</span><span class="p">,</span> <span class="n">force</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+            <span class="n">log_uploader</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;removed container </span><span class="si">%s</span><span class="se">\n</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">container_name</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">APIError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">response</span><span class="o">.</span><span class="n">status_code</span> <span class="o">==</span> <span class="mi">404</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;no container found for instance </span><span class="si">%s</span><span class="s1">, assuming already deleted&#39;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">e</span>
+        <span class="k">except</span> <span class="ne">ConnectionError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;no host found for instance </span><span class="si">%s</span><span class="s1">, assuming already deleted, exception: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                             <span class="p">(</span><span class="n">instance_id</span><span class="p">,</span> <span class="n">e</span><span class="p">))</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;do_deprovision done for </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">instance_id</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">get_active_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="p">):</span>
+        <span class="n">active_hosts</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">hosts</span> <span class="k">if</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">DD_STATE_ACTIVE</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">active_hosts</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">calculate_allocated_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">):</span>
+        <span class="n">num_allocated_slots</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">x</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">hosts</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">num_allocated_slots</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">calculate_free_slots</span><span class="p">(</span><span class="n">active_hosts</span><span class="p">):</span>
+        <span class="n">num_free_slots</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span>
+            <span class="n">x</span><span class="p">[</span><span class="s1">&#39;num_slots&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">active_hosts</span>
+            <span class="k">if</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">DD_STATE_ACTIVE</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="n">num_free_slots</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">calculate_projected_free_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">):</span>
+        <span class="n">num_projected_free_slots</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span>
+            <span class="n">x</span><span class="p">[</span><span class="s1">&#39;num_slots&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">hosts</span>
+            <span class="k">if</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;lifetime_left&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">DD_HOST_LIFETIME_LOW</span> <span class="ow">and</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">DD_STATE_ACTIVE</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="n">num_projected_free_slots</span>
+
+    <span class="k">def</span> <span class="nf">do_housekeep</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_do_housekeep_locked</span><span class="p">(</span><span class="n">token</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">LockTimeout</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): another thread is locking, skipping&#39;</span><span class="p">)</span>
+
+    <span class="nd">@locked</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/docker_driver_housekeep&#39;</span> <span class="o">%</span> <span class="n">DD_RUNTIME_PATH</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">_do_housekeep_locked</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_do_housekeep</span><span class="p">(</span><span class="n">token</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()))</span>
+
+    <span class="k">def</span> <span class="nf">_do_housekeep</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="c1"># in shutdown mode we remove the hosts as soon as no instances are running on them</span>
+        <span class="n">shutdown_mode</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_SHUTDOWN_MODE&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">shutdown_mode</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): in shutdown mode&#39;</span><span class="p">)</span>
+
+        <span class="c1"># fetch host data</span>
+        <span class="n">hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_hosts</span><span class="p">(</span><span class="n">cur_ts</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_update_host_lifetimes</span><span class="p">(</span><span class="n">hosts</span><span class="p">,</span> <span class="n">shutdown_mode</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">)</span>
+
+        <span class="c1"># find active hosts</span>
+        <span class="n">active_hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_active_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+
+        <span class="c1"># find current free slots</span>
+        <span class="n">num_free_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_free_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+
+        <span class="c1"># find projected free slots (only take active hosts with more than a minute to go)</span>
+        <span class="n">num_projected_free_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_projected_free_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+            <span class="s1">&#39;do_housekeep(): active hosts: </span><span class="si">%d</span><span class="s1">, free slots: </span><span class="si">%d</span><span class="s1"> now, </span><span class="si">%d</span><span class="s1"> projected for near future&#39;</span> <span class="o">%</span>
+            <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">active_hosts</span><span class="p">),</span> <span class="n">num_free_slots</span><span class="p">,</span> <span class="n">num_projected_free_slots</span><span class="p">)</span>
+        <span class="p">)</span>
+
+        <span class="c1"># priority one: find just spawned hosts, prepare and activate those</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_activate_spawned_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="o">=</span><span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="o">=</span><span class="n">cur_ts</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): activate action taken&#39;</span><span class="p">)</span>
+
+        <span class="c1"># priority two: remove inactive hosts that have no instances on them</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_remove_inactive_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="o">=</span><span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="o">=</span><span class="n">cur_ts</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): remove action taken&#39;</span><span class="p">)</span>
+
+        <span class="c1"># priority three: if we have less available slots than our target, spawn a new host</span>
+        <span class="c1"># in shutdown mode we skip this</span>
+        <span class="k">elif</span> <span class="ow">not</span> <span class="n">shutdown_mode</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_spawn_new_host</span><span class="p">(</span><span class="n">hosts</span><span class="o">=</span><span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="o">=</span><span class="n">cur_ts</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): spawn action taken&#39;</span><span class="p">)</span>
+
+        <span class="c1"># finally mark old hosts without instances inactive (one at a time)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_inactivate_old_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="o">=</span><span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="o">=</span><span class="n">cur_ts</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): inactivate action taken&#39;</span><span class="p">)</span>
+
+        <span class="c1"># save host state in the end</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_save_host_state</span><span class="p">(</span><span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_activate_spawned_hosts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">spawned_hosts</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">hosts</span> <span class="k">if</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">DD_STATE_SPAWNED</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">spawned_hosts</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): preparing host </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_host</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">DD_STATE_ACTIVE</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): host </span><span class="si">%s</span><span class="s1"> now active&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): preparing host </span><span class="si">%s</span><span class="s1"> failed, </span><span class="si">%s</span><span class="s1">, on line </span><span class="si">%d</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span> <span class="n">e</span><span class="p">,</span> <span class="n">sys</span><span class="o">.</span><span class="n">exc_info</span><span class="p">()[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">tb_lineno</span><span class="p">))</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;error_count&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;error_count&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span>
+                <span class="k">if</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;error_count&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">DD_MAX_HOST_ERRORS</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): maximum error count exceeded for host </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                    <span class="n">host</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">DD_STATE_INACTIVE</span>
+            <span class="k">return</span> <span class="kc">True</span>
+
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span> <span class="nf">_remove_inactive_hosts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">inactive_hosts</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">hosts</span> <span class="k">if</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">DD_STATE_INACTIVE</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">inactive_hosts</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): removing host </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_remove_host</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+                <span class="k">return</span> <span class="kc">True</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): inactive host </span><span class="si">%s</span><span class="s1"> still has </span><span class="si">%d</span><span class="s1"> reserved slots&#39;</span> <span class="o">%</span>
+                                  <span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]))</span>
+
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span> <span class="nf">_spawn_new_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="c1"># find projected free slots (only take active hosts with more than a minute to go)</span>
+        <span class="n">num_projected_free_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_projected_free_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+        <span class="n">num_allocated_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">calculate_allocated_slots</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">num_projected_free_slots</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_FREE_SLOT_TARGET&#39;</span><span class="p">]:</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_MAX_HOSTS&#39;</span><span class="p">]:</span>
+                <span class="c1"># try to figure out if we need to use the larger flavor</span>
+                <span class="c1"># if we at some point can get the number of queueing instances that can be used</span>
+                <span class="k">if</span> <span class="n">num_allocated_slots</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="n">ramp_up</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">ramp_up</span> <span class="o">=</span> <span class="kc">False</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): too few free slots, spawning, ramp_up=</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">ramp_up</span><span class="p">)</span>
+                <span class="n">new_host</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_spawn_host</span><span class="p">(</span><span class="n">cur_ts</span><span class="p">,</span> <span class="n">ramp_up</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): spawned a new host </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">new_host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="n">hosts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">new_host</span><span class="p">)</span>
+                <span class="k">return</span> <span class="kc">True</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): too few free slots, but host limit reached&#39;</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span> <span class="nf">_inactivate_old_hosts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">active_hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_active_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">active_hosts</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_left&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): making host </span><span class="si">%s</span><span class="s1"> inactive&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">DD_STATE_INACTIVE</span>
+                <span class="k">return</span> <span class="kc">True</span>
+            <span class="k">if</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;error_count&#39;</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">DD_MAX_HOST_ERRORS</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): too many errors, making host </span><span class="si">%s</span><span class="s1"> inactive&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">DD_STATE_INACTIVE</span>
+                <span class="k">return</span> <span class="kc">True</span>
+
+        <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">def</span> <span class="nf">_update_host_lifetimes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">shutdown_mode</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="c1"># calculate lifetime</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">hosts</span><span class="p">:</span>
+            <span class="c1"># shutdown mode, try to get rid of all hosts</span>
+            <span class="k">if</span> <span class="n">shutdown_mode</span><span class="p">:</span>
+                <span class="n">lifetime</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="c1"># if the host has been used or it is a bigger flavor, calculate lifetime normally</span>
+            <span class="k">elif</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;lifetime_tick_ts&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">):</span>
+                <span class="n">lifetime</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">DD_HOST_LIFETIME</span> <span class="o">-</span> <span class="p">(</span><span class="n">cur_ts</span> <span class="o">-</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_tick_ts&#39;</span><span class="p">]),</span> <span class="mi">0</span><span class="p">)</span>
+            <span class="c1"># if the host is the only one and not smaller flavor, don&#39;t leave it waiting</span>
+            <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_slots&#39;</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_FLAVOR_SLOTS_SMALL&#39;</span><span class="p">]:</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_tick_ts&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">cur_ts</span>
+                <span class="n">lifetime</span> <span class="o">=</span> <span class="n">DD_HOST_LIFETIME</span>
+            <span class="c1"># host has not been used</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">lifetime</span> <span class="o">=</span> <span class="n">DD_HOST_LIFETIME</span>
+
+            <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_left&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">lifetime</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;do_housekeep(): host </span><span class="si">%s</span><span class="s1"> has lifetime </span><span class="si">%d</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span> <span class="n">lifetime</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_select_hosts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">slots</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_hosts</span><span class="p">(</span><span class="n">cur_ts</span><span class="p">)</span>
+        <span class="n">active_hosts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_active_hosts</span><span class="p">(</span><span class="n">hosts</span><span class="p">)</span>
+
+        <span class="c1"># first try to use the oldest active host with space and lifetime left</span>
+        <span class="n">active_hosts</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">active_hosts</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">entry</span><span class="p">:</span> <span class="n">entry</span><span class="p">[</span><span class="s1">&#39;spawn_ts&#39;</span><span class="p">])</span>
+        <span class="n">selected_hosts</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">active_hosts</span><span class="p">:</span>
+            <span class="n">is_fresh</span> <span class="o">=</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_left&#39;</span><span class="p">]</span> <span class="o">&gt;</span> <span class="n">DD_HOST_LIFETIME_LOW</span>
+            <span class="n">has_enough_slots</span> <span class="o">=</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_slots&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">slots</span>
+            <span class="k">if</span> <span class="n">is_fresh</span> <span class="ow">and</span> <span class="n">has_enough_slots</span><span class="p">:</span>
+                <span class="n">selected_hosts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">selected_hosts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="c1"># try to use any active host with space</span>
+            <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">active_hosts</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_slots&#39;</span><span class="p">]</span> <span class="o">-</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">slots</span><span class="p">:</span>
+                    <span class="n">selected_hosts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">selected_hosts</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_select_host(): no space left, </span><span class="si">%d</span><span class="s1"> slots requested,&#39;</span>
+                              <span class="s1">&#39; active hosts: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">slots</span><span class="p">,</span> <span class="n">active_hosts</span><span class="p">))</span>
+            <span class="k">raise</span> <span class="ne">RuntimeWarning</span><span class="p">(</span><span class="s1">&#39;_select_host(): no space left for requested </span><span class="si">%d</span><span class="s1"> slots&#39;</span> <span class="o">%</span> <span class="n">slots</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;_select_host(): </span><span class="si">%d</span><span class="s2"> total active, </span><span class="si">%d</span><span class="s2"> available&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">active_hosts</span><span class="p">),</span>
+                                                                             <span class="nb">len</span><span class="p">(</span><span class="n">selected_hosts</span><span class="p">)))</span>
+        <span class="k">return</span> <span class="n">selected_hosts</span>
+
+    <span class="k">def</span> <span class="nf">_get_hosts</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+
+        <span class="n">data_file</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INSTANCE_DATA_DIR&#39;</span><span class="p">],</span> <span class="s1">&#39;docker_driver.json&#39;</span><span class="p">)</span>
+
+        <span class="n">hosts</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">load_json</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="p">[])</span>
+
+        <span class="c1"># populate hosts with container data</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">hosts</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="n">DD_STATE_ACTIVE</span><span class="p">,</span> <span class="n">DD_STATE_INACTIVE</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_get_hosts(): skipping container data fetching for </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="k">continue</span>
+            <span class="n">docker_client</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_docker_client</span><span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;docker_url&#39;</span><span class="p">])</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="c1"># update the number of reserved slots</span>
+                <span class="n">containers</span> <span class="o">=</span> <span class="n">docker_client</span><span class="o">.</span><span class="n">containers</span><span class="p">()</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">cont</span><span class="p">[</span><span class="s1">&#39;Labels&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;slots&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span> <span class="k">for</span> <span class="n">cont</span> <span class="ow">in</span> <span class="n">containers</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;_get_hosts(): found </span><span class="si">%d</span><span class="s1"> instances with </span><span class="si">%d</span><span class="s1"> slots on </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                                  <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">containers</span><span class="p">),</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">],</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]))</span>
+
+                <span class="c1"># update the accumulative usage</span>
+                <span class="n">usage</span> <span class="o">=</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;usage&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+                <span class="n">usage</span> <span class="o">+=</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">]</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;usage&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">usage</span>
+                <span class="c1"># start lifetime ticking</span>
+                <span class="k">if</span> <span class="n">usage</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;lifetime_tick_ts&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">):</span>
+                    <span class="n">host</span><span class="p">[</span><span class="s1">&#39;lifetime_tick_ts&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">cur_ts</span>
+
+            <span class="k">except</span> <span class="p">(</span><span class="ne">ConnectionError</span><span class="p">,</span> <span class="n">ReadTimeout</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s1">&#39;_get_hosts(): updating number of instances failed for </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])</span>
+                <span class="n">host</span><span class="p">[</span><span class="s1">&#39;error_count&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">host</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;error_count&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="mi">1</span>
+
+        <span class="k">return</span> <span class="n">hosts</span>
+
+    <span class="k">def</span> <span class="nf">_save_host_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hosts</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">):</span>
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+        <span class="n">data_file</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;INSTANCE_DATA_DIR&#39;</span><span class="p">],</span> <span class="s1">&#39;docker_driver.json&#39;</span><span class="p">)</span>
+        <span class="n">ap</span><span class="o">.</span><span class="n">save_as_json</span><span class="p">(</span><span class="n">data_file</span><span class="p">,</span> <span class="n">hosts</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_spawn_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cur_ts</span><span class="p">,</span> <span class="n">ramp_up</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+        <span class="n">instance_name</span> <span class="o">=</span> <span class="s1">&#39;pb_dd_</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span>
+        <span class="n">image_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_IMAGE&#39;</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="n">ramp_up</span><span class="p">:</span>
+            <span class="n">flavor_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_FLAVOR_NAME_LARGE&#39;</span><span class="p">]</span>
+            <span class="n">flavor_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_FLAVOR_SLOTS_LARGE&#39;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">flavor_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_FLAVOR_NAME_SMALL&#39;</span><span class="p">]</span>
+            <span class="n">flavor_slots</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_FLAVOR_SLOTS_SMALL&#39;</span><span class="p">]</span>
+
+        <span class="n">oss</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span><span class="o">.</span><span class="n">get_openstack_service</span><span class="p">({</span>
+            <span class="s1">&#39;M2M_CREDENTIAL_STORE&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;M2M_CREDENTIAL_STORE&#39;</span><span class="p">]</span>
+        <span class="p">})</span>
+
+        <span class="c1"># run actual provisioning</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="n">oss</span><span class="o">.</span><span class="n">provision_instance</span><span class="p">(</span>
+            <span class="n">display_name</span><span class="o">=</span><span class="n">instance_name</span><span class="p">,</span>
+            <span class="n">image_name</span><span class="o">=</span><span class="n">image_name</span><span class="p">,</span>
+            <span class="n">flavor_name</span><span class="o">=</span><span class="n">flavor_name</span><span class="p">,</span>
+            <span class="n">public_key</span><span class="o">=</span><span class="nb">open</span><span class="p">(</span><span class="s1">&#39;/home/pebbles/.ssh/id_rsa.pub&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span>
+            <span class="n">master_sg_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_MASTER_SG&#39;</span><span class="p">],</span>
+            <span class="n">extra_sec_groups</span><span class="o">=</span><span class="p">[</span><span class="n">x</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_EXTRA_SGS&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">()],</span>
+            <span class="n">allocate_public_ip</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+            <span class="n">root_volume_size</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_ROOT_VOLUME_SIZE&#39;</span><span class="p">],</span>
+            <span class="n">data_volume_size</span><span class="o">=</span><span class="n">flavor_slots</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_DATA_VOLUME_FACTOR&#39;</span><span class="p">],</span>
+            <span class="n">data_volume_type</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;DD_HOST_DATA_VOLUME_TYPE&#39;</span><span class="p">],</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;error&#39;</span> <span class="ow">in</span> <span class="n">res</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Failed to spawn a new host: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">res</span><span class="p">[</span><span class="s1">&#39;error&#39;</span><span class="p">])</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;_spawn_host_os_service: spawned </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">res</span><span class="p">)</span>
+        <span class="n">private_ip</span> <span class="o">=</span> <span class="n">res</span><span class="p">[</span><span class="s1">&#39;address_data&#39;</span><span class="p">][</span><span class="s1">&#39;private_ip&#39;</span><span class="p">]</span>
+        <span class="n">public_ip</span> <span class="o">=</span> <span class="n">res</span><span class="p">[</span><span class="s1">&#39;address_data&#39;</span><span class="p">][</span><span class="s1">&#39;public_ip&#39;</span><span class="p">]</span>
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">instance_name</span><span class="p">,</span>
+            <span class="s1">&#39;provider_id&#39;</span><span class="p">:</span> <span class="n">res</span><span class="p">[</span><span class="s1">&#39;server_id&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;docker_url&#39;</span><span class="p">:</span> <span class="s1">&#39;https://</span><span class="si">%s</span><span class="s1">:2376&#39;</span> <span class="o">%</span> <span class="n">private_ip</span><span class="p">,</span>
+            <span class="s1">&#39;public_ip&#39;</span><span class="p">:</span> <span class="n">public_ip</span><span class="p">,</span>
+            <span class="s1">&#39;private_ip&#39;</span><span class="p">:</span> <span class="n">private_ip</span><span class="p">,</span>
+            <span class="s1">&#39;spawn_ts&#39;</span><span class="p">:</span> <span class="n">cur_ts</span><span class="p">,</span>
+            <span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">DD_STATE_SPAWNED</span><span class="p">,</span>
+            <span class="s1">&#39;num_reserved_slots&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+            <span class="s1">&#39;num_slots&#39;</span><span class="p">:</span> <span class="n">flavor_slots</span><span class="p">,</span>
+            <span class="s1">&#39;error_count&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="p">}</span>
+
+    <span class="k">def</span> <span class="nf">_prepare_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">host</span><span class="p">):</span>
+        <span class="n">ap</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span>
+
+        <span class="n">ap</span><span class="o">.</span><span class="n">run_ansible_on_host</span><span class="p">(</span><span class="n">host</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">)</span>
+
+        <span class="n">docker_client</span> <span class="o">=</span> <span class="n">ap</span><span class="o">.</span><span class="n">get_docker_client</span><span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;docker_url&#39;</span><span class="p">])</span>
+
+        <span class="n">dconf</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_configuration</span><span class="p">()</span>
+
+        <span class="k">for</span> <span class="n">image_name</span> <span class="ow">in</span> <span class="n">dconf</span><span class="p">[</span><span class="s1">&#39;schema&#39;</span><span class="p">][</span><span class="s1">&#39;properties&#39;</span><span class="p">][</span><span class="s1">&#39;docker_image&#39;</span><span class="p">][</span><span class="s1">&#39;enum&#39;</span><span class="p">]:</span>
+            <span class="n">filename</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">/</span><span class="si">%s</span><span class="s1">.img&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">DD_IMAGE_DIRECTORY</span><span class="p">,</span> <span class="n">image_name</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">,</span> <span class="s1">&#39;.&#39;</span><span class="p">))</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;_prepare_host(): uploading image </span><span class="si">%s</span><span class="s2"> from file </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">image_name</span><span class="p">,</span> <span class="n">filename</span><span class="p">))</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span> <span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">img_file</span><span class="p">:</span>
+                <span class="n">docker_client</span><span class="o">.</span><span class="n">load_image</span><span class="p">(</span><span class="n">img_file</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_remove_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">host</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;_remove_host()&quot;</span><span class="p">)</span>
+        <span class="n">oss</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ap</span><span class="p">()</span><span class="o">.</span><span class="n">get_openstack_service</span><span class="p">({</span>
+            <span class="s1">&#39;M2M_CREDENTIAL_STORE&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="p">[</span><span class="s1">&#39;M2M_CREDENTIAL_STORE&#39;</span><span class="p">]</span>
+        <span class="p">})</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="n">oss</span><span class="o">.</span><span class="n">deprovision_instance</span><span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;provider_id&#39;</span><span class="p">],</span> <span class="n">delete_attached_volumes</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;error&#39;</span> <span class="ow">in</span> <span class="n">res</span><span class="o">.</span><span class="n">keys</span><span class="p">():</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Failed to remove host </span><span class="si">%s</span><span class="s1">: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">host</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span> <span class="n">res</span><span class="p">[</span><span class="s1">&#39;error&#39;</span><span class="p">]))</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper"><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../../../index.html">Documentation overview</a><ul>
+  <li><a href="../../../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../../../../search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &copy;2016, CSC - Center for Scientific Computing Ltd..
+      
+      |
+      Powered by <a href="http://sphinx-doc.org/">Sphinx 1.5</a>
+      &amp; <a href="https://github.com/bitprophet/alabaster">Alabaster 0.7.10</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>

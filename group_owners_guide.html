@@ -1,0 +1,180 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Group Owner’s Guide &#8212; pebbles 4.0.0.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="_static/alabaster.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '4.0.0.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true,
+        SOURCELINK_SUFFIX: '.txt'
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
+
+  </head>
+  <body role="document">
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="group-owner-s-guide">
+<h1>Group Owner&#8217;s Guide<a class="headerlink" href="#group-owner-s-guide" title="Permalink to this headline">¶</a></h1>
+<p>Groups give you more control and flexiblity to manage your blueprints for
+different sets of users.  A group can contain multiple blueprints and multiple
+users in it. Each blueprint that you create based on a given template would
+require a mandatory group to associate it with. Hence, the blueprints would
+only visible to the users belonging to a specific group.</p>
+<p>A group can be joined only if the user has a valid joining code. Upon joining,
+he can see the list of blueprints associated with that group.  A group can only
+have a single owner i.e. the one who has created the group but it can have
+multiple &#8220;managers&#8221;.  If a user is banned from a group, he can no longer see
+the blueprints of the said group.  A user is allowed to leave the group if he
+wants.</p>
+<p>A group owner can perform the following operations:</p>
+<ul class="simple">
+<li>create a new group or modify the existing group</li>
+<li>add or remove group managers</li>
+<li>ban or unban a user</li>
+<li>create and modify blueprints on a group which he owns or manages</li>
+<li>check and delete the instances of users running on their groups&#8217; blueprints</li>
+<li>launch instances using his groups&#8217; blueprints</li>
+</ul>
+<p>A group owner can always be a group manager for a group which he doesn&#8217;t own,
+provided he is been appointed to be one.  Similarly, he can also be a normal
+user in a group which he doesn&#8217;t own, provided he has a valid joining code for
+a group.</p>
+<p>The group manager has slightly less priviledges as compared to group owner. A
+group manager <em>cannot create or modify an existing group</em>.
+They however have the following rights:</p>
+<ul class="simple">
+<li>create and modify blueprints on a group for which they have a right to manage</li>
+<li>check and delete the instances of users running on their groups&#8217; blueprints</li>
+<li>launch instances using his managed groups&#8217; blueprints</li>
+</ul>
+<p>A group manager is always one of the users of the groups that he manages. He
+can also join other groups as a normal user if he has a joining code.</p>
+<p>A regular user can do the following things on a Pebbles instance:</p>
+<ul class="simple">
+<li>Join and exit a group</li>
+<li>Run an instance based on the blueprints belonging to his groups</li>
+<li>Destroy an instance they started earlier</li>
+</ul>
+<div class="section" id="instructions">
+<h2>Instructions<a class="headerlink" href="#instructions" title="Permalink to this headline">¶</a></h2>
+<p><strong>Creating a Group:</strong></p>
+<ol class="arabic simple">
+<li>Go the Groups tab</li>
+<li>Click on create group button. Give a name and description.</li>
+</ol>
+<p><strong>Adding a manager and banning users</strong></p>
+<ol class="arabic simple">
+<li>Once the user has joined , click on modify group</li>
+<li>Select the user(s) in the banned users / managers multiselct component accordingly.</li>
+</ol>
+<p><strong>Creating a blueprint:</strong></p>
+<ol class="arabic simple">
+<li>Click on Blueprints tab</li>
+<li>You will see a list of templates that admin has created for you to choose from. From any one of the template, click on Click Blueprint</li>
+<li>Then choose the group which you want the blueprint to be associated with, enter the name , description and other properties which you see (if you want to override the default values)</li>
+<li>Click on Activate to activate the blueprint for the users</li>
+</ol>
+<p><strong>To Join A Group:</strong></p>
+<ol class="arabic simple">
+<li>Go to Accounts tab -&gt; Join Group</li>
+<li>Enter the code provided by group admin or manager</li>
+</ol>
+<p><strong>To Leave A Group:</strong></p>
+<ol class="arabic simple">
+<li>Go to Accounts tab</li>
+<li>From the list of groups , click on Exit Group for any of the groups</li>
+</ol>
+</div>
+<div class="section" id="github-persistence">
+<h2>Github persistence<a class="headerlink" href="#github-persistence" title="Permalink to this headline">¶</a></h2>
+<p>See <a class="reference internal" href="github_persistence.html"><span class="doc">Simple persistence in GitHub</span></a></p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Group Owner&#8217;s Guide</a><ul>
+<li><a class="reference internal" href="#instructions">Instructions</a></li>
+<li><a class="reference internal" href="#github-persistence">Github persistence</a></li>
+</ul>
+</li>
+</ul>
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="index.html">Documentation overview</a><ul>
+  </ul></li>
+</ul>
+</div>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="_sources/group_owners_guide.rst.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <div><input type="text" name="q" /></div>
+      <div><input type="submit" value="Go" /></div>
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &copy;2016, CSC - Center for Scientific Computing Ltd..
+      
+      |
+      Powered by <a href="http://sphinx-doc.org/">Sphinx 1.5</a>
+      &amp; <a href="https://github.com/bitprophet/alabaster">Alabaster 0.7.10</a>
+      
+      |
+      <a href="_sources/group_owners_guide.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>
