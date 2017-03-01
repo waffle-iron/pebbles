@@ -161,6 +161,26 @@ app.controller('DashboardController', ['$q', '$scope', '$interval', 'AuthService
             }
         };
 
+        $scope.openInBrowser = function(instance) {
+            if('password' in instance.instance_data){
+                $uibModal.open({
+                    templateUrl: '/partials/modal_show_password.html',
+                    controller: 'ModalShowPasswordController',
+                    scope: $scope,
+                    resolve: {
+                        instance: function(){
+                           return instance;
+                        },
+                    }   
+                }).result.then(function(markedInstances) {
+                       window.open(instance.instance_data['endpoints'][0].access, '_blank');
+                });
+            }
+            else{
+                window.open(instance.instance_data['endpoints'][0].access, '_blank');
+            }
+        };
+
 
         $scope.openDestroyDialog = function(instance) {
             $uibModal.open({
@@ -227,6 +247,23 @@ app.controller('DashboardController', ['$q', '$scope', '$interval', 'AuthService
 
         $scope.startPolling();
     }]);
+
+app.controller('ModalShowPasswordController', function($scope, $modalInstance, instance) {
+    $scope.instance = instance
+    $scope.copyAndClose = function() {
+         var copyTextarea = document.querySelector('#password');
+         copyTextarea.select();
+         try {
+             var successful = document.execCommand('copy'); 
+        }
+        catch (e) {
+        }
+        $modalInstance.close(true);
+    };
+
+
+
+});
 
 app.controller('ModalDestroyInstanceController', function($scope, $modalInstance, instance, markedInstances) {
 
